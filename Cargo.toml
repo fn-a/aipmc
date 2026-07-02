@@ -11,8 +11,8 @@ keywords = ["aip", "acp", "embedded", "esp32", "stm32"]
 [dependencies]
 basic = { workspace = true }
 transport = { workspace = true }
-esp32 = { path = "crates/esp32", optional = true, package = "aipmc-esp32" }
-stm32 = { path = "crates/stm32", optional = true, package = "aipmc-stm32" }
+esp32 = { path = "crates/esp32", optional = true, package = "aipmc-esp32", version = "0.0.1" }
+stm32 = { path = "crates/stm32", optional = true, package = "aipmc-stm32", version = "0.0.1" }
 
 [features]
 default = ["std"]
@@ -52,5 +52,5 @@ log = "^0.4"
 defmt = "^1.1"
 critical-section = "^1.2"
 
-basic = { path = "crates/basic", package = "aipmc-basic" }
-transport = { path = "crates/transport", package = "aipmc-transport" }
+basic = { path = "crates/basic", package = "aipmc-basic", version = "0.0.1" }
+transport = { path = "crates/transport", package = "aipmc-transport", version = "0.0.1" }
