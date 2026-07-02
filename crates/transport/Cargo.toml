@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Transport layer of the AIP agent interconnect protocol — supports UART/WiFi/BLE communication"
 
 [dependencies]
 basic = { workspace = true }
