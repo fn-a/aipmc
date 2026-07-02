@@ -1,0 +1,19 @@
+[package]
+name = "aipmc-basic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+heapless = { workspace = true }
+log = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+default = ["alloc"]
+alloc = ["serde_json/alloc"]
+std = ["alloc", "serde_json/std"]
+defmt = ["dep:defmt"]

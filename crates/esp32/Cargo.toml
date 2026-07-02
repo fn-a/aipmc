@@ -1,0 +1,24 @@
+[package]
+name = "aipmc-esp32"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+basic = { workspace = true }
+transport = { workspace = true }
+heapless = { workspace = true }
+log = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+default = []
+esp32 = []
+esp32s2 = []
+esp32s3 = []
+esp32c3 = []
+esp32c6 = []
+wifi = []
+ble = []
+defmt = ["dep:defmt", "basic/defmt"]

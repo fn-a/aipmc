@@ -1,0 +1,21 @@
+[package]
+name = "aipmc-stm32"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+basic = { workspace = true }
+transport = { workspace = true }
+heapless = { workspace = true }
+log = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+default = []
+stm32f4 = []
+stm32h7 = []
+stm32l4 = []
+stm32g4 = []
+defmt = ["dep:defmt", "basic/defmt"]

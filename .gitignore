@@ -1,1 +1,26 @@
+# Rust
 /target
+*.lock
+*.log
+*.local
+*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+build/
+dist/
+
+# ESP
+.sconsign.dblite
+
+# STM
+openocd.log

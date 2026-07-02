@@ -1,0 +1,19 @@
+[package]
+name = "aipmc-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+basic = { workspace = true }
+embedded-io = { workspace = true }
+embedded-io-async = { workspace = true, optional = true }
+heapless = { workspace = true }
+log = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+default = []
+async = ["embedded-io-async"]
+defmt = ["dep:defmt", "basic/defmt"]

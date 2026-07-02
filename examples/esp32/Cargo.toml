@@ -1,0 +1,10 @@
+[package]
+name = "aipmc-esp32-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aipmc = { path = "../../", features = ["esp32"] }
+heapless = { workspace = true }
+log = { workspace = true }
