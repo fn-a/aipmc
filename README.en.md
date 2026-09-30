@@ -8,10 +8,17 @@ A Rust implementation of the Agent Collaboration Protocol Suite (ACPs) based on 
 
 AIPMC (Agent Interconnection Protocol for Micro-Controllers) is an open-source project that adapts the [ACPs-community](https://atomgit.com/AIP-PUB/ACPs-community) agent interconnection protocol for resource-constrained microcontroller scenarios. It enables ESP-32, STM-32, and other MCU devices to act as lightweight agent nodes participating in ACPs-based agent networks, providing:
 
-- **Agent Discovery & Registration**: MCU devices describe their capabilities and skills via AgentCard, supporting dynamic service discovery
-- **Standard Protocol Communication**: Inter-agent communication based on ACPs protocol primitives (Initialize / Message / TaskCancel / Authorize, etc.)
-- **Multiple Transport Channels**: Support for UART, SPI, I2C, WiFi, BLE, and other common embedded communication methods
-- **Low Resource Footprint**: `no_std` design with controllable core protocol stack memory usage, adaptable to MCUs with < 512KB RAM
+- **Identity & description aligned with the spec**: identity uses an AIC (10-segment dotted OID with a CRC checksum); the capability document is the ACS `AgentCapabilitySpec` (camelCase JSON)
+- **Standard Protocol Communication**: inter-agent communication based on bespoke binary frame primitives (Initialize / Stream / TaskCancel / Authorize, etc.)
+- **Multiple Transport Channels**: UART and SPI are implemented (any `embedded_io::Read + Write` byte stream reuses the same framing logic); WiFi / BLE are placeholders; I2C is not implemented yet
+
+> ⚠️ **Protocol conformance note**
+>
+> The data model (AIC identity / ACS description / camelCase fields) has been aligned with the
+> ACPs specification. However the **transport and frame format remain
+> bespoke** (magic `0xA1A2` + single-byte method codes); the specification uses JSON-RPC 2.0
+> over HTTP/SSE (methods `rpc` / `stream` / `notification/*` / `group`).
+> Reaching an ACPs network through a gateway still needs an adaptation layer (not implemented).
 
 ---
 
@@ -57,9 +64,11 @@ The core design goal of AIPMC is to adapt the ACPs agent interconnection protoco
 │  └─────────┴──────────┴───────────┘        │
 ├────────────────────────────────────────┤
 │           transport (transport layer)        │
-│  ┌────┬─────┬────┬────┬───────────┐        │
-│  │UART│ SPI │I2C │WiFi│   BLE     │        │
-│  └────┴─────┴────┴────┴───────────┘        │
+│  ┌────────┬────────┬────────┬────────┐      │
+│  │ UART   │  SPI   │ WiFi   │  BLE   │      │
+│  │  done  │  done  │ stub   │ stub   │      │
+│  └────────┴────────┴────────┴────────┘      │
+│         FrameReader (read_exact framing)     │
 ├───────────┬──────────────────────────────┤
 │  esp32    │          stm32                   │  Platform adaptation
 │ (ESP32    │        (STM32 HAL                │
@@ -74,34 +83,46 @@ The core design goal of AIPMC is to adapt the ACPs agent interconnection protoco
 
 #### basic (aipmc-basic)
 
-Protocol core library, `no_std` compatible, no platform dependencies.
+Protocol core library, `no_std` compatible, no platform dependencies and **no IO traits**.
 
-- **AgentCard**: Agent card describing agent identity, capabilities, and skill list
-- **AgentSkill**: Skill description including input/output schema definitions
-- **AcpProtocol**: Protocol constants and version definitions
-- **AcpMessage**: Protocol message containing header + Session-ID + Payload
-- **AcpCodec**: Streaming codec supporting frame-by-frame decoding from `embedded_io::Read`
-- **AipError**: Unified error type
+- **Aic**: Agent identity code — a 10-segment dotted OID, validated on construction (format + CRC-16/CCITT-FALSE)
+- **AgentCapabilitySpec**: ACS capability document (identity, protocol capabilities, endpoints, default MIME modes, skills) with camelCase JSON
+- **AgentSkill / MimeMode**: Skill description (`id`/`name`/`description`/`version`/`tags`/`examples`/`inputModes`/`outputModes`)
+- **AgentCapability**: MCU hardware capability (sensor/actuator/…), serialized into `x-mcu.capabilities`
+- **AcpProtocol / AcpMethod / AcpStatusCode / AcpsBinding**: the bespoke frame definitions, including a queryable method-to-spec binding
+- **AcpMessage**: Protocol message containing header + Session-ID + Payload (encoding is self-consistent; decoding never panics)
+- **AcpHeader / flags**: Header fields plus FIN/COMP/ENC flag accessors
+- **AcpCodec**: Stateless codec (`encode` / `encode_to` / `decode` / `decode_frame`)
+- **AipError**: Unified error type implementing `core::error::Error` (usable in `no_std`)
 
 #### transport (aipmc-transport)
 
-Transport layer abstraction based on `embedded-io` traits.
+Transport layer abstraction based on `embedded-io` traits; `no_std` and allocation-free.
 
-| Transport | Use Case | Typical Bandwidth |
-|-----------|----------|-------------------|
-| UART | Wired inter-MCU communication | 9600~921600 bps |
-| SPI | High-speed board-level communication | 1~40 Mbps |
-| I2C | Low-speed sensor bus | 100~400 Kbps |
-| WiFi | ESP-32 wireless networking | 1~54 Mbps |
-| BLE | Low-power wireless | 1~2 Mbps |
+- **FrameReader**: Reads and validates one frame at a time from any `embedded_io::Read` using `read_exact`
+- **StreamTransport**: Whole-frame send plus frame-wise receive; `UartTransport` / `SpiTransport` are scenario aliases
+- **WifiTransport / BleTransport**: Placeholders returning `AipError::NotImplemented` (**they never panic**)
+
+| Transport | Use Case | Typical Bandwidth | Status |
+|-----------|----------|-------------------|--------|
+| UART | Wired inter-MCU communication | 9600~921600 bps | Implemented |
+| SPI | High-speed board-level communication | 1~40 Mbps | Implemented (board code must expose transactions as a byte stream) |
+| WiFi | ESP-32 wireless networking | 1~54 Mbps | Placeholder, returns `NotImplemented` |
+| BLE | Low-power wireless | 1~2 Mbps | Placeholder, returns `NotImplemented` |
+| I2C | Low-speed sensor bus | 100~400 Kbps | Not implemented (not an ordered byte stream, so `StreamTransport` does not apply) |
 
 #### esp32 (aipmc-esp32)
 
-ESP-32 platform adaptation layer, depending on `esp-wifi`, `esp-hal`, and other crates.
+ESP-32 platform adaptation layer, `no_std`. Chip identification (`esp32` / `esp32s2` / `esp32s3` /
+`esp32c3` / `esp32c6` features, mutually exclusive, conflicting selection triggers `compile_error!`)
+and ACS capability-spec generation `capability_spec(aic)` are implemented; `init_wifi` (needs `wifi`) and `init_ble` (needs `ble`)
+return `AipError::NotImplemented`. `esp-hal` / `esp-wifi` are not integrated yet.
 
 #### stm32 (aipmc-stm32)
 
-STM-32 platform adaptation layer, depending on `stm32-hal` and other crates.
+STM-32 platform adaptation layer, `no_std`. Series identification (`stm32f4` / `stm32h7` /
+`stm32l4` / `stm32g4` features, mutually exclusive) and ACS capability-spec generation are implemented;
+`init_uart` returns `AipError::NotImplemented`. `stm32-hal` / `embassy-stm32` are not integrated yet.
 
 ---
 
@@ -117,6 +138,12 @@ The cloud ACPs protocol is based on JSON-RPC over HTTP/SSE. The MCU scenario mak
 | Streaming | SSE (text/event-stream) | Frame-based streaming |
 | Authentication | OAuth / AK-SK | Shared secret / lightweight auth |
 | Discovery | HTTP URL | Multicast/broadcast discovery frames |
+
+> **Note**: the table above states *design intent*, not a field-level mapping onto the ACPs
+> specification. In the current ACPs community implementation (`acps-specs` v02.01) the protocol
+> methods are `rpc` / `stream` / `notification/*` / `group` (JSON-RPC 2.0), the agent description
+> object is `AgentCapabilitySpec` (ACS), the identity field is `aic`, and wire fields are
+> camelCase. This project implements none of those methods and has no session handshake beyond a Session-ID field.
 
 ---
 
@@ -160,38 +187,43 @@ The cloud ACPs protocol is based on JSON-RPC over HTTP/SSE. The MCU scenario mak
 
 ### Method Code Definitions
 
-#### ACPs Standard Methods
+Method codes are bespoke to this protocol (the spec uses JSON-RPC method name strings).
+The table below gives the **actual** correspondence; it is queryable in code via
+`AcpMethod::acps_binding()` and locked down by tests:
 
-| Code | Name | Direction | Description |
-|------|------|-----------|-------------|
-| 0x01 | Initialize | C→S | Client initiates session |
-| 0x02 | Initialized | S→C | Server confirms initialization, returns Session-ID |
-| 0x03 | Message/Stream | Bidirectional | Message streaming (may span multiple frames) |
-| 0x04 | Task/Cancel | C→S | Cancel current task |
-| 0x05 | ClearContext | C→S | Clear conversation context |
-| 0x06 | Authorize | C→S | Initiate authorization |
-| 0x07 | Deauthorize | C→S | Cancel authorization |
-| 0x08 | Push | S→C | Server push notification |
+| Code | Name | Direction | ACPs correspondence |
+|------|------|-----------|---------------------|
+| 0x01 | Initialize | C→S | none (MCU extension; the spec has no handshake) |
+| 0x02 | Initialized | S→C | none (MCU extension), returns Session-ID |
+| 0x03 | Stream | Bidirectional | JSON-RPC method `stream` (may span multiple frames) |
+| 0x04 | TaskCancel | C→S | TaskCommand `cancel` |
+| 0x05 | ClearContext | C→S | none (MCU extension; no such concept in the spec) |
+| 0x06 | Authorize | C→S | none (the spec expresses this via `securitySchemes` + mTLS) |
+| 0x07 | Deauthorize | C→S | none (MCU extension) |
+| 0x08 | Push | S→C | `notification/*` (Partner→Leader HTTP POST) |
+| 0x10 | Discover | Broadcast | ADP discovery path `/discover` |
+| 0x11 | CapabilitySpec | S→C | ACS document object `AgentCapabilitySpec` (response to Discover) |
+| 0x20 | Heartbeat | Bidirectional | none (MCU extension), keep-alive |
+| 0x21 | HeartbeatAck | Bidirectional | none (MCU extension), heartbeat acknowledgment |
 
-#### MCU Extension Methods
-
-| Code | Name | Direction | Description |
-|------|------|-----------|-------------|
-| 0x10 | Discover | Broadcast | Agent discovery request/response |
-| 0x11 | AgentCard | S→C | AgentCard description response |
-| 0x20 | Heartbeat | Bidirectional | Keep-alive heartbeat |
-| 0x21 | HeartbeatAck | Bidirectional | Heartbeat acknowledgment |
+> Response mapping is provided by `AcpMethod::response_method()`:
+> `Initialize → Initialized`, `Discover → CapabilitySpec`, `Heartbeat → HeartbeatAck`,
+> everything else maps to itself.
 
 ### Payload Formats
+
+> The payload shapes below are **conventions** (the current implementation only provides the
+> codec and the data model, not these flows). Identity always uses `aic` (an AIC string) and
+> capability documents use ACS camelCase fields.
 
 #### Initialize (0x01)
 
 **Request Payload:**
 ```json
 {
-  "version": "1.0",
-  "agent_id": "client-agent-01",
-  "capabilities": ["sensor-read"]
+  "protocolVersion": "02.01",
+  "aic": "1.2.156.3088.1.0001.00001.ABC123.000001.176F",
+  "capabilities": ["streaming"]
 }
 ```
 
@@ -200,16 +232,16 @@ The cloud ACPs protocol is based on JSON-RPC over HTTP/SSE. The MCU scenario mak
 {
   "session_id": 12345,
   "status": 0,
-  "server_agent_id": "esp32-sensor-01"
+  "aic": "1.2.156.3088.1.0001.00002.ABC124.000003.XXXX"
 }
 ```
 
-#### Message/Stream (0x03)
+#### Stream (0x03)
 
 **Request Payload:**
 ```json
 {
-  "skill_id": "temp-read",
+  "skill_id": "temp.read",
   "input": {
     "unit": "C"
   }
@@ -243,29 +275,37 @@ Final frame (`FIN=1`):
 ```json
 {
   "filter": {
-    "capability": "sensor-read",
-    "tag": "temperature"
+    "tag": "sensor"
   }
 }
 ```
 
-**Response Payload (AgentCard 0x11):**
+**Response Payload (CapabilitySpec 0x11 — ACS subset plus MCU extensions):**
 ```json
 {
-  "agent_id": "esp32-sensor-01",
+  "aic": "1.2.156.3088.1.0001.00001.ABC123.000001.176F",
+  "active": true,
+  "lastModifiedTime": "2026-07-03T09:26:02+08:00",
+  "protocolVersion": "02.01",
   "name": "ESP32 Temperature Sensor",
   "description": "DHT22 temperature and humidity sensor",
   "version": "0.1.0",
-  "capabilities": ["sensor-read"],
+  "provider": { "countryCode": "CN", "organization": "ACME" },
+  "endPoints": [{ "url": "aip://gateway.local/agents/esp32-01", "transport": "HTTP_JSON" }],
+  "capabilities": { "streaming": true, "notification": false, "messageQueue": [] },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
   "skills": [
     {
-      "id": "temp-read",
+      "id": "temp.read",
       "name": "ReadTemperature",
-      "input_schema": {...},
-      "output_schema": {...}
+      "description": "Read temperature",
+      "version": "0.1.0",
+      "tags": ["sensor"],
+      "x-mcu": { "inputSchema": { "...": "..." }, "outputSchema": { "...": "..." } }
     }
   ],
-  "endpoint": "aip://esp32-sensor-01.local"
+  "x-mcu": { "capabilities": ["sensorRead"] }
 }
 ```
 
@@ -358,7 +398,7 @@ Client                        Server
      │   (broadcast)           │
      │                          │
      │<── Discover Response ───│
-     │   (AgentCard JSON)      │
+     │   (AgentCapabilitySpec JSON)      │
      │                          │
 ```
 
@@ -368,46 +408,51 @@ Client                        Server
 
 ```
 aipmc/
-├── Cargo.toml                    # [package] aipmc + [workspace] sub-crates
+├── Cargo.toml                    # [package] aipmc + [workspace] sub-crates + [workspace.lints]
 ├── src/
-│   └── lib.rs                    # aipmc unified export layer
+│   └── lib.rs                    # aipmc unified export layer (no_std)
 ├── crates/
-│   ├── basic/                    # Core protocol library (no_std)
+│   ├── basic/                    # Core protocol library (no_std, no IO dependency)
 │   │   ├── Cargo.toml
 │   │   ├── README.md
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── agent.rs          # AgentCard / AgentCapability
-│   │       ├── skill.rs          # AgentSkill
-│   │       ├── protocol.rs       # ACPs protocol definitions
-│   │       ├── message.rs        # AcpMessage
-│   │       ├── codec.rs          # AcpCodec
+│   │       ├── aic.rs            # Aic: identity-code parsing/validation (CRC-16 + Base36)
+│   │       ├── acs.rs            # AgentCapabilitySpec / AgentProvider / AgentEndPoint / Transport
+│   │       ├── skill.rs          # AgentSkill / MimeMode
+│   │       ├── protocol.rs       # bespoke frame definitions (methods/status/header/flags/AcpsBinding)
+│   │       ├── message.rs        # AcpMessage codec
+│   │       ├── codec.rs          # AcpCodec stateless codec
+│   │       ├── util.rs           # crate-internal helpers
 │   │       └── error.rs          # AipError
-│   ├── transport/                # Transport layer abstraction
+│   ├── transport/                # Transport layer abstraction (no_std)
 │   │   ├── Cargo.toml
 │   │   ├── README.md
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── uart.rs           # UART transport
-│   │       ├── wifi.rs           # WiFi transport (ESP-32)
-│   │       └── ble.rs            # BLE transport
-│   ├── esp32/                    # ESP-32 platform adaptation
+│   │       ├── frame.rs          # FrameReader: read_exact framing + validation
+│   │       ├── stream.rs         # StreamTransport: whole-frame send/receive
+│   │       ├── uart.rs           # UART alias
+│   │       ├── spi.rs            # SPI alias
+│   │       ├── wifi.rs           # WiFi placeholder (returns NotImplemented)
+│   │       └── ble.rs            # BLE placeholder (returns NotImplemented)
+│   ├── esp32/                    # ESP-32 platform adaptation (chip features + AgentCapabilitySpec)
 │   │   ├── Cargo.toml
 │   │   ├── README.md
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       └── hal.rs
-│   └── stm32/                    # STM-32 platform adaptation
+│   │   └── src/{lib.rs, hal.rs}
+│   └── stm32/                    # STM-32 platform adaptation (series features + AgentCapabilitySpec)
 │       ├── Cargo.toml
 │       ├── README.md
-│       └── src/
-│           ├── lib.rs
-│           └── hal.rs
+│       └── src/{lib.rs, hal.rs}
 ├── examples/
-│   ├── esp32/                    # ESP-32 agent example
-│   └── stm32/                    # STM-32 agent example
-├── tests/                        # Integration tests
-└── README.md
+│   ├── README.md                 # how to build the examples, and their limits
+│   ├── esp32/                    # ESP-32 agent firmware skeleton (standalone package)
+│   └── stm32/                    # STM-32 agent firmware skeleton (standalone package)
+├── tests/
+│   ├── integration.rs            # integration test entry point
+│   ├── basic/                    # protocol core tests (protocol / message / agent)
+│   └── transport/                # transport tests (frame / stream)
+└── README.md / README.en.md
 ```
 
 ---
@@ -432,15 +477,35 @@ cargo install probe-rs
 ### Usage Example
 
 ```rust
-use aipmc::basic::{AgentCard, AgentSkill, AcpMessage, AcpMethod, AgentCapability};
+use aipmc::basic::acs::{AgentCapability, AgentCapabilitySpec, AgentEndPoint, Transport};
+use aipmc::basic::aic::Aic;
+use aipmc::basic::skill::AgentSkill;
+use aipmc::basic::{AcpMessage, AcpMethod};
 
-let agent = AgentCard::new("dev-01", "MyAgent", "A test agent")
-    .unwrap()
-    .with_capability(AgentCapability::SensorRead)
-    .unwrap()
-    .with_skill(AgentSkill::new("temp", "ReadTemp", "Read temperature").unwrap())
+// The identity code is issued by the registry; parsing on-device validates it
+// (format + segment count + Base36 + prefix)
+let aic = Aic::parse("1.2.156.3088.1.0001.00001.ABC123.000001.176F").unwrap();
+assert!(aic.is_entity());
+// With a SALT you can also verify the level-10 CRC
+assert!(aic.verify_checksum(aipmc::basic::aic::REGISTRY_DEFAULT_SALT));
+
+// ACS capability document: field names and JSON casing follow the spec.
+// Note: ~11 KB, so keep it in static/.bss on firmware; setters take &mut self.
+let mut spec =
+    AgentCapabilitySpec::new(aic, "ESP32-Sensor", "Temperature sensor agent").unwrap();
+let mut skill = AgentSkill::new("temp.read", "ReadTemperature", "Read temperature").unwrap();
+skill.add_tag("sensor").unwrap();
+spec.add_skill(skill).unwrap();
+spec.add_hardware_capability(AgentCapability::SensorRead) // MCU extension: x-mcu
     .unwrap();
+spec.add_end_point(
+    AgentEndPoint::new("aip://gateway.local/agents/esp32-01", Transport::HttpJson).unwrap(),
+)
+.unwrap();
+assert!(spec.validate().is_ok());
+assert!(spec.find_skill("temp.read").is_some());
 
+// Bespoke binary frame: self-consistent encoding, panic-free decoding
 let msg = AcpMessage::with_payload(AcpMethod::Initialize, 0, b"hello").unwrap();
 let encoded = msg.encode().unwrap();
 let decoded = AcpMessage::decode(&encoded).unwrap();
@@ -449,40 +514,89 @@ let decoded = AcpMessage::decode(&encoded).unwrap();
 ### Running Tests
 
 ```bash
-cargo test
+# Whole workspace (unit + integration + doctests)
+cargo test --workspace
 ```
 
-### Building ESP-32 Example
+### MCU profile (no std, no allocator)
+
+```toml
+[dependencies]
+aipmc = { version = "0.0.1", default-features = false }
+```
 
 ```bash
-cargo build --target xtensa-esp32-none-elf --bin aipmc-esp32-example
-espflash flash target/xtensa-esp32-none-elf/debug/aipmc-esp32-example
+# Cross-compile check (STM-32 target as an example)
+cargo build --no-default-features --target thumbv7em-none-eabihf
 ```
 
-### Building STM-32 Example
+### Building the ESP-32 Example
 
 ```bash
-cargo build --target thumbv7em-none-eabihf --bin aipmc-stm32-example
-probe-rs run target/thumbv7em-none-eabihf/debug/aipmc-stm32-example
+cd examples/esp32
+cargo build --release --target xtensa-esp32-none-elf
+espflash flash target/xtensa-esp32-none-elf/release/aipmc-esp32-example
 ```
 
----
+### Building the STM-32 Example
+
+```bash
+cd examples/stm32
+cargo build --release --target thumbv7em-none-eabihf
+probe-rs run --chip STM32H743ZITx target/thumbv7em-none-eabihf/release/aipmc-stm32-example
+```
 
 ## Roadmap
 
-- [x] Core protocol data structures (AgentCard / AgentSkill / AcpMessage)
-- [x] Binary protocol codec
-- [x] UART transport implementation
-- [x] Integration tests (17 test cases)
-- [ ] WiFi transport (based on esp-wifi)
-- [ ] BLE transport
-- [ ] Agent discovery protocol implementation
-- [ ] Session management (initialize / clearContext)
-- [ ] Authorization and authentication flow
-- [ ] Streaming message transport
-- [ ] ESP-32 full HAL adaptation
-- [ ] STM-32 full HAL adaptation
-- [ ] CI/CD automated builds
+### Done
+
+- [x] Spec-aligned data model: AIC identity code (10-segment OID + CRC-16/CCITT-FALSE + Base36 checksum)
+- [x] ACS capability document `AgentCapabilitySpec` (camelCase; spec `endPoints` / `capabilities` / `defaultInputModes` fields)
+- [x] Skills `AgentSkill` (spec `id`/`name`/`description`/`version`/`tags`/`examples`/`inputModes`/`outputModes`)
+- [x] MCU extensions explicitly namespaced (root-level / skill-level `x-mcu`), omitted when empty
+- [x] Bespoke binary codec (`AcpHeader` / `AcpMessage` / `AcpCodec`): self-consistent encoding, panic-free decoding
+- [x] Header validation (magic / version / method / `payload_len` range) and checksum verification
+- [x] FIN / COMP / ENC flags and fragmentation helpers
+- [x] Queryable method-to-spec binding (`AcpMethod::acps_binding()`) with response mapping, locked by tests
+- [x] Byte-stream framing (`FrameReader` with `read_exact` + length validation) and `StreamTransport`
+- [x] UART / SPI transports
+- [x] ESP-32 / STM-32 chip features and ACS capability-spec generation (`capability_spec(aic)`)
+- [x] `no_std` and allocator-free builds; `alloc` can be switched off entirely
+- [x] Integration tests (99 cases) + doctests (7), covering every known defect and the upstream AIC golden vectors
+- [x] CI: `fmt` / `clippy -D warnings` / `test` / `no_std` cross build / `rustdoc`
+
+### To do
+
+- [ ] **Gateway adaptation layer**: frame ↔ JSON-RPC, method code ↔ spec method, `AcpStatusCode` ↔ `TaskState`/error codes
+- [ ] Agent discovery flow (Discover broadcast / response / result aggregation)
+- [ ] Session management (Initialize / session table / expiry / ClearContext)
+- [ ] Authorization flow (Authorize / Deauthorize / `securitySchemes`)
+- [ ] Streaming fragmentation and reassembly (FIN semantics defined, reassembly state machine missing)
+- [ ] Task state machine (accepted / working / awaiting-input / awaiting-completion / completed / canceled / failed / rejected)
+- [ ] Receive-side resynchronisation (magic scanning) for noisy UART links
+- [ ] **Move the ACS to flash**: keep it as JSON in `.rodata`, validated at build time,
+      dropping runtime RAM from ~11 KB to ~1 KB (for 32 KB-RAM class MCUs)
+- [ ] WiFi transport (`esp-wifi` integration)
+- [ ] BLE transport (GATT characteristic send/receive)
+- [ ] I2C transport (needs a dedicated implementation on top of the I2C HAL)
+- [ ] Full ESP-32 / STM-32 HAL adaptation and real firmware examples (startup code, linker scripts)
+- [ ] Hardware-in-the-loop (HIL) tests on embedded targets
+- [ ] (Optional, option C) implement an ACPs transport subset on the MCU so devices can join ACPs networks directly
+
+## Known Limitations
+
+| Limitation | Description |
+|------------|-------------|
+| Transport layer is not spec-conformant | The data model is aligned, but framing/transport remain bespoke; entering an ACPs network needs a gateway adapter |
+| `securitySchemes` not emitted | One of the ACS required fields; an MCU cannot run TLS/mTLS on its own, so the gateway fills it in at registration |
+| AIC cannot be generated | Generation is a registry responsibility; the device only validates, so the AIC must be provisioned |
+| WiFi / BLE not implemented | The APIs exist but return `AipError::NotImplemented` (no longer panic) |
+| Platform layer not wired to a HAL | Only chip identification and an ACS skeleton exist; no real peripheral drivers |
+| No receive-side resync | A corrupted header cannot be re-aligned automatically; the upper layer must reset the link |
+| 32 KB RAM needs a low skill count | `AgentCapabilitySpec` occupies ~11 KB in `.bss` (1 skill) / ~18.5 KB (8 skills) |
+| Weak frame checksum | An 8-bit arithmetic sum only catches accidental corruption, not tampering (the AIC CRC-16 is a separate mechanism) |
+| Examples are not flashable as-is | They only type-check; platform startup code is missing |
+| `--all-features` does not work | Platform crates have mutually exclusive chip features; enabling several triggers `compile_error!` |
 
 ## References
 

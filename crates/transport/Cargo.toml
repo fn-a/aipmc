@@ -5,17 +5,17 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Transport layer of the AIP agent interconnect protocol — supports UART/WiFi/BLE communication"
+description = "Transport layer of the AIP agent interconnect protocol — supports UART/SPI/WiFi/BLE communication"
+keywords = ["aip", "acp", "embedded", "no-std", "transport"]
+
+[lib]
+name = "transport"
 
 [dependencies]
 basic = { workspace = true }
 embedded-io = { workspace = true }
-embedded-io-async = { workspace = true, optional = true }
-heapless = { workspace = true }
-log = { workspace = true }
 defmt = { workspace = true, optional = true }
 
 [features]
 default = []
-async = ["embedded-io-async"]
 defmt = ["dep:defmt", "basic/defmt"]

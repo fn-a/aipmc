@@ -8,10 +8,16 @@
 
 AIPMC（Agent Interconnection Protocol for Micro-Controllers）是将 [ACPs-community](https://atomgit.com/AIP-PUB/ACPs-community) 智能体互联协作协议适配到资源受限的微控制器场景的开源项目。它使 ESP-32、STM-32 等 MCU 设备能够作为轻量级智能体节点，参与基于 ACPs 协议的智能体网络，实现：
 
-- **智能体发现与注册**：MCU 设备通过 AgentCard 描述自身能力与技能，支持动态服务发现
-- **标准协议通信**：基于 ACPs 协议原语（Initialize / Message / TaskCancel / Authorize 等）进行智能体间通信
-- **多传输通道**：支持 UART、SPI、I2C、WiFi、BLE 等嵌入式常用通信方式
-- **低资源占用**：`no_std` 设计，核心协议栈内存占用可控，适配 RAM < 512KB 的 MCU
+- **智能体身份与描述对齐规范**：身份使用 AIC（10 级点分 OID，带 CRC 校验），能力描述使用 ACS 的 `AgentCapabilitySpec`（camelCase JSON）
+- **标准协议通信**：基于自有二进制帧原语（Initialize / Stream / TaskCancel / Authorize 等）进行智能体间通信
+- **多传输通道**：UART、SPI 已实现（任何 `embedded_io::Read + Write` 字节流都可复用同一套分帧逻辑）；WiFi / BLE 为占位实现；I2C 待实现
+
+> ⚠️ **协议一致性提示**
+>
+> 数据模型（身份 AIC / 能力描述 ACS / camelCase 字段）已对齐 ACPs 规范；
+> 但**传输与帧格式仍是自有的**（Magic `0xA1A2` + 单字节方法码），规范使用
+> JSON-RPC 2.0 over HTTP/SSE（方法为 `rpc` / `stream` / `notification/*` / `group`）。
+> 跨网关进入 ACPs 网络需要一个适配层（尚未实现）。
 
 ---
 
@@ -57,9 +63,11 @@ AIPMC 的核心设计目标是将基于 GB/Z 185 标准的 ACPs 智能体互联�
 │  └─────────┴──────────┴───────────┘        │
 ├──────────────────────────────────────────┤
 │           transport (传输层)                  │
-│  ┌────┬─────┬────┬────┬───────────┐        │
-│  │UART│ SPI │I2C │WiFi│   BLE     │        │
-│  └────┴─────┴────┴────┴───────────┘        │
+│  ┌────────┬────────┬────────┬────────┐      │
+│  │ UART   │  SPI   │ WiFi   │  BLE   │      │
+│  │ 已实现 │ 已实现 │  占位  │  占位  │      │
+│  └────────┴────────┴────────┴────────┘      │
+│         FrameReader（read_exact 分帧）        │
 ├───────────┬───────────────────────────────┤
 │  esp32    │          stm32                   │  平台适配
 │ (ESP32    │        (STM32 HAL                │
@@ -74,34 +82,45 @@ AIPMC 的核心设计目标是将基于 GB/Z 185 标准的 ACPs 智能体互联�
 
 #### basic（aipmc-basic）
 
-协议核心库，`no_std` 兼容，无平台依赖。
+协议核心库，`no_std` 兼容，无平台依赖，**不依赖任何 IO trait**。
 
-- **AgentCard**：智能体卡片，描述智能体身份、能力、技能列表
-- **AgentSkill**：技能描述，包含输入/输出模式定义
-- **AcpProtocol**：协议常量与版本定义
-- **AcpMessage**：协议消息，包含报头 + Session-ID + Payload
-- **AcpCodec**：流式编解码器，支持从 `embedded_io::Read` 逐帧解码
-- **AipError**：统一错误类型
+- **Aic**：智能体身份码，10 级点分 OID，构造即校验（格式 + CRC-16/CCITT-FALSE）
+- **AgentCapabilitySpec**：ACS 能力描述（身份、协议能力、端点、默认 MIME、技能），camelCase JSON
+- **AgentSkill / MimeMode**：技能描述（`id`/`name`/`description`/`version`/`tags`/`examples`/`inputModes`/`outputModes`）
+- **AgentCapability**：MCU 硬件能力（传感器/执行器/…），序列化到 `x-mcu.capabilities`
+- **AcpProtocol / AcpMethod / AcpStatusCode / AcpsBinding**：自有二进制帧定义，含方法码 → 规范的绑定查询
+- **AcpMessage**：协议消息，包含报头 + Session-ID + Payload（编解码契约：编码自洽、解码绝不 panic）
+- **AcpHeader / flags**：帧头字段与 FIN/COMP/ENC 标志位访问器
+- **AcpCodec**：无状态编解码器（`encode` / `encode_to` / `decode` / `decode_frame`）
+- **AipError**：统一错误类型（实现 `core::error::Error`，可用于 `no_std`）
 
 #### transport（aipmc-transport）
 
-传输层抽象，基于 `embedded-io` trait。
+传输层抽象，基于 `embedded-io` trait，`no_std` 且不做动态分配。
 
-| 传输方式 | 适用场景 | 典型波特率/带宽 |
-|----------|----------|-----------------|
-| UART | MCU 间有线通信 | 9600~921600 bps |
-| SPI | 高速板级通信 | 1~40 Mbps |
-| I2C | 低速传感器总线 | 100~400 Kbps |
-| WiFi | ESP-32 无线联网 | 1~54 Mbps |
-| BLE | 低功耗无线 | 1~2 Mbps |
+- **FrameReader**：从任意 `embedded_io::Read` 用 `read_exact` 逐帧读取、校验
+- **StreamTransport**：整帧发送 + 按帧接收；`UartTransport` / `SpiTransport` 是其场景别名
+- **WifiTransport / BleTransport**：占位实现，返回 `AipError::NotImplemented`（**不会 panic**）
+
+| 传输方式 | 适用场景 | 典型波特率/带宽 | 状态 |
+|----------|----------|-----------------|------|
+| UART | MCU 间有线通信 | 9600~921600 bps | 已实现 |
+| SPI | 高速板级通信 | 1~40 Mbps | 已实现（需板级代码把事务封装为字节流） |
+| WiFi | ESP-32 无线联网 | 1~54 Mbps | 占位，返回 `NotImplemented` |
+| BLE | 低功耗无线 | 1~2 Mbps | 占位，返回 `NotImplemented` |
+| I2C | 低速传感器总线 | 100~400 Kbps | 未实现（不是有序字节流，无法复用 `StreamTransport`） |
 
 #### esp32（aipmc-esp32）
 
-ESP-32 平台适配层，依赖 `esp-wifi`、`esp-hal` 等 crate。
+ESP-32 平台适配层，`no_std`。已实现芯片识别（`esp32` / `esp32s2` / `esp32s3` / `esp32c3` / `esp32c6`
+feature，互斥，冲突时 `compile_error!`）与 ACS 能力描述生成 `capability_spec(aic)`；`init_wifi`（需 `wifi` feature）与
+`init_ble`（需 `ble` feature）返回 `AipError::NotImplemented`。尚未对接 `esp-hal` / `esp-wifi`。
 
 #### stm32（aipmc-stm32）
 
-STM-32 平台适配层，依赖 `stm32-hal` 等 crate。
+STM-32 平台适配层，`no_std`。已实现系列识别（`stm32f4` / `stm32h7` / `stm32l4` / `stm32g4`
+feature，互斥）与 ACS 能力描述生成 `capability_spec(aic)`；`init_uart` 返回 `AipError::NotImplemented`。
+尚未对接 `stm32-hal` / `embassy-stm32`。
 
 ---
 
@@ -117,6 +136,11 @@ STM-32 平台适配层，依赖 `stm32-hal` 等 crate。
 | 流式传输 | SSE (text/event-stream) | 分帧流式传输 |
 | 认证 | OAuth / AK-SK | 共享密钥 / 轻量认证 |
 | 发现 | HTTP URL | 组播/广播发现帧 |
+
+> **注意**：上表描述的是**设计意图**，不是与 ACPs 规范的实际字段级对应关系。
+> 就当前 ACPs 社区实现（`acps-specs` v02.01）而言：协议方法是 `rpc` / `stream` /
+> `notification/*` / `group`（JSON-RPC 2.0），智能体描述对象是 `AgentCapabilitySpec`（ACS），
+> 身份字段是 `aic`，线上字段为 camelCase；本项目并没有这些方法，也没有 `session` 之外的会话握手。
 
 ---
 
@@ -160,38 +184,40 @@ STM-32 平台适配层，依赖 `stm32-hal` 等 crate。
 
 ### 方法码定义
 
-#### ACPs 标准方法
+方法码是本协议自有的（规范用 JSON-RPC 方法名字符串）。下表给出**真实**的对应关系，
+代码中可通过 `AcpMethod::acps_binding()` 查询，并有测试锁定：
 
-| 方法码 | 名称 | 方向 | 说明 |
-|--------|------|------|------|
-| 0x01 | Initialize | C→S | 客户端发起会话初始化 |
-| 0x02 | Initialized | S→C | 服务端确认初始化，返回 Session-ID |
-| 0x03 | Message/Stream | 双向 | 消息流式传输（可多帧） |
-| 0x04 | Task/Cancel | C→S | 取消当前任务 |
-| 0x05 | ClearContext | C→S | 清除对话上下文 |
-| 0x06 | Authorize | C→S | 发起授权 |
-| 0x07 | Deauthorize | C→S | 取消授权 |
-| 0x08 | Push | S→C | 服务端推送 |
+| 方法码 | 名称 | 方向 | ACPs 对应 |
+|--------|------|------|-----------|
+| 0x01 | Initialize | C→S | 无（MCU 扩展；规范没有握手流程） |
+| 0x02 | Initialized | S→C | 无（MCU 扩展），返回 Session-ID |
+| 0x03 | Stream | 双向 | JSON-RPC 方法 `stream`（可多帧） |
+| 0x04 | TaskCancel | C→S | TaskCommand `cancel` |
+| 0x05 | ClearContext | C→S | 无（MCU 扩展；规范没有该概念） |
+| 0x06 | Authorize | C→S | 无（规范用 `securitySchemes` + mTLS 表达） |
+| 0x07 | Deauthorize | C→S | 无（MCU 扩展） |
+| 0x08 | Push | S→C | `notification/*`（Partner→Leader HTTP POST） |
+| 0x10 | Discover | 广播 | ADP 发现路径 `/discover` |
+| 0x11 | CapabilitySpec | S→C | ACS 文档对象 `AgentCapabilitySpec`（Discover 的响应） |
+| 0x20 | Heartbeat | 双向 | 无（MCU 扩展），心跳保活 |
+| 0x21 | HeartbeatAck | 双向 | 无（MCU 扩展），心跳确认 |
 
-#### MCU 扩展方法
-
-| 方法码 | 名称 | 方向 | 说明 |
-|--------|------|------|------|
-| 0x10 | Discover | 广播 | 智能体发现请求/响应 |
-| 0x11 | AgentCard | S→C | AgentCard 描述返回 |
-| 0x20 | Heartbeat | 双向 | 心跳保活 |
-| 0x21 | HeartbeatAck | 双向 | 心跳确认 |
+> 响应方法码映射由 `AcpMethod::response_method()` 统一给出：
+> `Initialize → Initialized`、`Discover → CapabilitySpec`、`Heartbeat → HeartbeatAck`，其余方法保持不变。
 
 ### Payload 格式
+
+> 以下 Payload 结构为**约定示例**（当前实现只提供编解码与数据模型，尚未实现这些流程）。
+> 身份字段统一使用 `aic`（AIC 字符串），能力描述使用 ACS 的 camelCase 字段。
 
 #### Initialize (0x01)
 
 **请求 Payload:**
 ```json
 {
-  "version": "1.0",
-  "agent_id": "client-agent-01",
-  "capabilities": ["sensor-read"]
+  "protocolVersion": "02.01",
+  "aic": "1.2.156.3088.1.0001.00001.ABC123.000001.176F",
+  "capabilities": ["streaming"]
 }
 ```
 
@@ -200,16 +226,16 @@ STM-32 平台适配层，依赖 `stm32-hal` 等 crate。
 {
   "session_id": 12345,
   "status": 0,
-  "server_agent_id": "esp32-sensor-01"
+  "aic": "1.2.156.3088.1.0001.00002.ABC124.000003.XXXX"
 }
 ```
 
-#### Message/Stream (0x03)
+#### Stream (0x03)
 
 **请求 Payload:**
 ```json
 {
-  "skill_id": "temp-read",
+  "skill_id": "temp.read",
   "input": {
     "unit": "C"
   }
@@ -243,29 +269,39 @@ STM-32 平台适配层，依赖 `stm32-hal` 等 crate。
 ```json
 {
   "filter": {
-    "capability": "sensor-read",
-    "tag": "temperature"
+    "tag": "sensor"
   }
 }
 ```
 
-**响应 Payload (AgentCard 0x11):**
+**响应 Payload (CapabilitySpec 0x11，ACS 子集 + MCU 扩展):**
 ```json
 {
-  "agent_id": "esp32-sensor-01",
+  "aic": "1.2.156.3088.1.0001.00001.ABC123.000001.176F",
+  "active": true,
+  "lastModifiedTime": "2026-07-03T09:26:02+08:00",
+  "protocolVersion": "02.01",
   "name": "ESP32 Temperature Sensor",
   "description": "DHT22 temperature and humidity sensor",
   "version": "0.1.0",
-  "capabilities": ["sensor-read"],
+  "provider": { "countryCode": "CN", "organization": "ACME" },
+  "endPoints": [
+    { "url": "aip://gateway.local/agents/esp32-01", "transport": "HTTP_JSON" }
+  ],
+  "capabilities": { "streaming": true, "notification": false, "messageQueue": [] },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
   "skills": [
     {
-      "id": "temp-read",
+      "id": "temp.read",
       "name": "ReadTemperature",
-      "input_schema": {...},
-      "output_schema": {...}
+      "description": "Read temperature",
+      "version": "0.1.0",
+      "tags": ["sensor"],
+      "x-mcu": { "inputSchema": { "...": "..." }, "outputSchema": { "...": "..." } }
     }
   ],
-  "endpoint": "aip://esp32-sensor-01.local"
+  "x-mcu": { "capabilities": ["sensorRead"] }
 }
 ```
 
@@ -358,7 +394,7 @@ Client                        Server
      │   (broadcast)           │
      │                          │
      │<── Discover Response ───│
-     │   (AgentCard JSON)      │
+     │   (AgentCapabilitySpec JSON)      │
      │                          │
 ```
 
@@ -368,46 +404,51 @@ Client                        Server
 
 ```
 aipmc/
-├── Cargo.toml                    # [package] aipmc + [workspace] 子 crates
+├── Cargo.toml                    # [package] aipmc + [workspace] 子 crates + [workspace.lints]
 ├── src/
-│   └── lib.rs                    # aipmc 统一导出层
+│   └── lib.rs                    # aipmc 统一导出层（no_std）
 ├── crates/
-│   ├── basic/                    # 核心协议库 (no_std)
+│   ├── basic/                    # 核心协议库 (no_std, 无 IO 依赖)
 │   │   ├── Cargo.toml
 │   │   ├── README.md
 │   │   └── src/
-│   │       ├── lib.rs            
-│   │       ├── agent.rs          # AgentCard / AgentCapability
-│   │       ├── skill.rs          # AgentSkill 技能描述
-│   │       ├── protocol.rs       # ACPs 协议定义 (方法码/状态码/帧头)
+│   │       ├── lib.rs
+│   │       ├── aic.rs            # Aic：身份码解析/校验（CRC-16 + Base36）
+│   │       ├── acs.rs            # AgentCapabilitySpec / AgentProvider / AgentEndPoint / Transport
+│   │       ├── skill.rs          # AgentSkill / MimeMode
+│   │       ├── protocol.rs       # 自有帧定义（方法码/状态码/帧头/flags/AcpsBinding）
 │   │       ├── message.rs        # AcpMessage 消息编解码
-│   │       ├── codec.rs          # AcpCodec 编解码器
+│   │       ├── codec.rs          # AcpCodec 无状态编解码器
+│   │       ├── util.rs           # crate 内部工具
 │   │       └── error.rs          # AipError 统一错误类型
-│   ├── transport/                # 传输层抽象
+│   ├── transport/                # 传输层抽象 (no_std)
 │   │   ├── Cargo.toml
 │   │   ├── README.md
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── uart.rs           # UART 传输
-│   │       ├── wifi.rs           # WiFi 传输 (ESP-32)
-│   │       └── ble.rs            # BLE 传输
-│   ├── esp32/                    # ESP-32 平台适配
+│   │       ├── frame.rs          # FrameReader：read_exact 分帧 + 校验
+│   │       ├── stream.rs         # StreamTransport：整帧收发
+│   │       ├── uart.rs           # UART 别名
+│   │       ├── spi.rs            # SPI 别名
+│   │       ├── wifi.rs           # WiFi 占位（返回 NotImplemented）
+│   │       └── ble.rs            # BLE 占位（返回 NotImplemented）
+│   ├── esp32/                    # ESP-32 平台适配（芯片 feature + AgentCapabilitySpec）
 │   │   ├── Cargo.toml
 │   │   ├── README.md
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       └── hal.rs
-│   └── stm32/                    # STM-32 平台适配
+│   │   └── src/{lib.rs, hal.rs}
+│   └── stm32/                    # STM-32 平台适配（系列 feature + AgentCapabilitySpec）
 │       ├── Cargo.toml
 │       ├── README.md
-│       └── src/
-│           ├── lib.rs
-│           └── hal.rs
+│       └── src/{lib.rs, hal.rs}
 ├── examples/
-│   ├── esp32/                    # ESP-32 智能体示例
-│   └── stm32/                    # STM-32 智能体示例
-├── tests/                        # 集成测试
-└── README.md
+│   ├── README.md                 # 示例构建说明与限制
+│   ├── esp32/                    # ESP-32 智能体固件骨架（独立包）
+│   └── stm32/                    # STM-32 智能体固件骨架（独立包）
+├── tests/
+│   ├── integration.rs            # 集成测试入口
+│   ├── basic/                    # 协议核心测试（protocol / message / agent）
+│   └── transport/                # 传输层测试（frame / stream）
+└── README.md / README.en.md
 ```
 
 ---
@@ -432,15 +473,34 @@ cargo install probe-rs
 ### 使用示例
 
 ```rust
-use aipmc::basic::{AgentCard, AgentSkill, AcpMessage, AcpMethod, AgentCapability};
+use aipmc::basic::acs::{AgentCapability, AgentCapabilitySpec, AgentEndPoint, Transport};
+use aipmc::basic::aic::Aic;
+use aipmc::basic::skill::AgentSkill;
+use aipmc::basic::{AcpMessage, AcpMethod};
 
-let agent = AgentCard::new("dev-01", "MyAgent", "A test agent")
-    .unwrap()
-    .with_capability(AgentCapability::SensorRead)
-    .unwrap()
-    .with_skill(AgentSkill::new("temp", "ReadTemp", "Read temperature").unwrap())
+// 身份码由注册中心签发；设备侧解析即校验（格式 + 段数 + Base36 + 前缀）
+let aic = Aic::parse("1.2.156.3088.1.0001.00001.ABC123.000001.176F").unwrap();
+assert!(aic.is_entity());
+// 有 SALT 时可进一步校验第 10 级校验码
+assert!(aic.verify_checksum(aipmc::basic::aic::REGISTRY_DEFAULT_SALT));
+
+// ACS 能力描述：字段名与 JSON 大小写遵循规范
+// 注意：约 11 KB，固件里应放在 static/.bss；设置接口是 &mut self
+let mut spec =
+    AgentCapabilitySpec::new(aic, "ESP32-Sensor", "Temperature sensor agent").unwrap();
+let mut skill = AgentSkill::new("temp.read", "ReadTemperature", "Read temperature").unwrap();
+skill.add_tag("sensor").unwrap();
+spec.add_skill(skill).unwrap();
+spec.add_hardware_capability(AgentCapability::SensorRead) // MCU 扩展：x-mcu
     .unwrap();
+spec.add_end_point(
+    AgentEndPoint::new("aip://gateway.local/agents/esp32-01", Transport::HttpJson).unwrap(),
+)
+.unwrap();
+assert!(spec.validate().is_ok());
+assert!(spec.find_skill("temp.read").is_some());
 
+// 自有二进制帧：编码自洽、解码不 panic
 let msg = AcpMessage::with_payload(AcpMethod::Initialize, 0, b"hello").unwrap();
 let encoded = msg.encode().unwrap();
 let decoded = AcpMessage::decode(&encoded).unwrap();
@@ -449,40 +509,89 @@ let decoded = AcpMessage::decode(&encoded).unwrap();
 ### 运行测试
 
 ```bash
-cargo test
+# 全工作区（单位置测试 + 集成测试 + doctest）
+cargo test --workspace
+```
+
+### MCU 场景（关闭 std 与分配器）
+
+```toml
+[dependencies]
+aipmc = { version = "0.0.1", default-features = false }
+```
+
+```bash
+# 交叉编译检查（以 STM-32 目标为例）
+cargo build --no-default-features --target thumbv7em-none-eabihf
 ```
 
 ### 构建 ESP-32 示例
 
 ```bash
-cargo build --target xtensa-esp32-none-elf --bin aipmc-esp32-example
-espflash flash target/xtensa-esp32-none-elf/debug/aipmc-esp32-example
+cd examples/esp32
+cargo build --release --target xtensa-esp32-none-elf
+espflash flash target/xtensa-esp32-none-elf/release/aipmc-esp32-example
 ```
 
 ### 构建 STM-32 示例
 
 ```bash
-cargo build --target thumbv7em-none-eabihf --bin aipmc-stm32-example
-probe-rs run target/thumbv7em-none-eabihf/debug/aipmc-stm32-example
+cd examples/stm32
+cargo build --release --target thumbv7em-none-eabihf
+probe-rs run --chip STM32H743ZITx target/thumbv7em-none-eabihf/release/aipmc-stm32-example
 ```
-
----
 
 ## 功能路线图
 
-- [x] 核心协议数据结构（AgentCard / AgentSkill / AcpMessage）
-- [x] 二进制协议编解码器
-- [x] UART 传输层实现
-- [x] 集成测试（17 个测试用例）
-- [ ] WiFi 传输层（基于 esp-wifi）
-- [ ] BLE 传输层
-- [ ] 智能体发现协议实现
-- [ ] 会话管理（initialize / clearContext）
-- [ ] 授权认证流程
-- [ ] 流式消息传输
-- [ ] ESP-32 完整 HAL 适配
-- [ ] STM-32 完整 HAL 适配
-- [ ] CI/CD 自动化构建
+### 已完成
+
+- [x] 与规范对齐的数据模型：AIC 身份码（10 级 OID + CRC-16/CCITT-FALSE + Base36 校验）
+- [x] ACS 能力描述 `AgentCapabilitySpec`（camelCase、规范的 `endPoints` / `capabilities` / `defaultInputModes` 等字段）
+- [x] 技能 `AgentSkill`（规范的 `id`/`name`/`description`/`version`/`tags`/`examples`/`inputModes`/`outputModes`）
+- [x] MCU 扩展显式命名空间化（根级 / 技能级 `x-mcu`），为空时不出现
+- [x] 自有二进制协议编解码（`AcpHeader` / `AcpMessage` / `AcpCodec`），编码自洽、解码绝不 panic
+- [x] 帧头字段校验（Magic / 版本 / 方法码 / `payload_len` 区间）与校验和校验
+- [x] FIN / COMP / ENC 标志位与分片语义辅助方法
+- [x] 方法码 → 规范概念的绑定查询（`AcpMethod::acps_binding()`）与响应映射，有测试锁定
+- [x] 字节流分帧（`FrameReader`：`read_exact` + 长度校验）与 `StreamTransport`
+- [x] UART / SPI 传输通道
+- [x] ESP-32 / STM-32 芯片 feature 与 ACS 能力描述生成（`capability_spec(aic)`）
+- [x] `no_std` + 无分配器构建；关闭默认特性后不依赖 `alloc`
+- [x] 集成测试（99 个用例）+ doctest（7 个），覆盖全部已知缺陷的回归与 AIC 上游黄金向量
+- [x] CI：`fmt` / `clippy -D warnings` / `test` / `no_std` 交叉构建 / `rustdoc`
+
+### 待完成
+
+- [ ] **网关适配层**：帧 ↔ JSON-RPC、方法码 ↔ 规范方法、`AcpStatusCode` ↔ `TaskState`/错误码
+- [ ] 智能体发现流程（Discover 广播 / 应答 / 结果聚合）
+- [ ] 会话管理（Initialize / 会话表 / 过期清理 / ClearContext）
+- [ ] 授权认证流程（Authorize / Deauthorize / `securitySchemes`）
+- [ ] 流式消息分片与重组（FIN 语义已定义，未实现重组状态机）
+- [ ] 任务状态机（accepted / working / awaiting-input / awaiting-completion / completed / canceled / failed / rejected）
+- [ ] 接收侧重同步（Magic 扫描），提升 UART 噪声环境下的恢复能力
+- [ ] **ACS 改为常驻 flash**：以 JSON 形式放在 `.rodata`、构建期校验，
+      把运行期 RAM 从约 11 KB 降到约 1 KB（面向 32 KB RAM 级芯片）
+- [ ] WiFi 传输（对接 `esp-wifi`）
+- [ ] BLE 传输（GATT 特征值收发）
+- [ ] I2C 传输（需基于 I2C HAL 单独实现）
+- [ ] ESP-32 / STM-32 完整 HAL 适配与真实固件示例（启动代码、链接脚本）
+- [ ] 嵌入式目标上的硬件在环（HIL）测试
+- [ ] （可选，选项 C）在 MCU 上实现 ACPs 传输子集，使设备可直接加入 ACPs 网络
+
+## 已知限制
+
+| 限制 | 说明 |
+|------|------|
+| 传输层非规范实现 | 数据模型已对齐规范，但帧格式与传输仍是自有的，进入 ACPs 网络需要网关适配层 |
+| `securitySchemes` 未输出 | ACS 的必填字段之一，MCU 无法独立承担 TLS/mTLS，注册时由网关补齐 |
+| AIC 不能生成 | 生成属注册中心职责；设备侧只做校验，AIC 需预置 |
+| WiFi / BLE 未实现 | 相关 API 存在但返回 `AipError::NotImplemented`（不再 panic） |
+| 平台层未对接 HAL | 只提供芯片识别与 ACS 骨架，无真实外设驱动 |
+| 无接收侧重同步 | 帧头被破坏后无法自动重新对齐，需上层复位链路 |
+| 32 KB RAM 需严控技能数 | `AgentCapabilitySpec` 常驻 `.bss` 约 11 KB（1 技能）/ 18.5 KB（满载 8 技能） |
+| 帧校验和强度有限 | 8 位算术校验和只能发现偶发错误，不抵抗恶意篡改（身份码的 CRC-16 是另一套机制） |
+| 示例不可直接烧录 | 只做类型检查，缺平台启动代码 |
+| `--all-features` 不可用 | 平台 crate 的芯片 feature 互斥，同时启用会 `compile_error!` |
 
 ## 参考资源
 

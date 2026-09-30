@@ -6,12 +6,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "STM-32 platform adaptation layer for the AIP agent interconnect protocol"
+keywords = ["aip", "acp", "stm32", "embedded", "no-std"]
 
 [dependencies]
 basic = { workspace = true }
 transport = { workspace = true }
-heapless = { workspace = true }
-log = { workspace = true }
 defmt = { workspace = true, optional = true }
 
 [features]
@@ -20,4 +19,4 @@ stm32f4 = []
 stm32h7 = []
 stm32l4 = []
 stm32g4 = []
-defmt = ["dep:defmt", "basic/defmt"]
+defmt = ["dep:defmt", "basic/defmt", "transport/defmt"]

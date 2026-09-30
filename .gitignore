@@ -1,6 +1,5 @@
 # Rust
-/target
-*.lock
+target/
 *.log
 *.local
 *.rs.bk

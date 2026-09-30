@@ -6,16 +6,19 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Core library of the AIP agent interconnect protocol — ACPs protocol implementation based on GB/Z 185 standard"
+keywords = ["aip", "acp", "embedded", "no-std", "protocol"]
+
+[lib]
+name = "basic"
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, optional = true }
 heapless = { workspace = true }
-log = { workspace = true }
 defmt = { workspace = true, optional = true }
 
 [features]
 default = ["alloc"]
-alloc = ["serde_json/alloc"]
+alloc = ["dep:serde_json", "serde_json/alloc"]
 std = ["alloc", "serde_json/std"]
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "heapless/defmt"]

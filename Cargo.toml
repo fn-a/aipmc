@@ -19,7 +19,12 @@ default = ["std"]
 std = ["basic/std"]
 esp32 = ["dep:esp32"]
 stm32 = ["dep:stm32"]
-defmt = ["basic/defmt"]
+defmt = ["basic/defmt", "transport/defmt"]
+
+[dev-dependencies]
+embedded-io = { workspace = true }
+heapless = { workspace = true }
+serde_json = { workspace = true }
 
 [workspace]
 resolver = "2"
@@ -37,6 +42,7 @@ exclude = [
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.85"
 authors = ["fn-a <mr.fna.co@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/fn-a/aipmc"
@@ -46,10 +52,6 @@ serde = { version = "^1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "^1.0", default-features = false, features = ["alloc"] }
 heapless = { version = "^0.9", features = ["serde"] }
 embedded-io = "^0.7"
-embedded-io-async = "^0.7"
-log = "^0.4"
 defmt = "^1.1"
-critical-section = "^1.2"
-
-basic = { path = "crates/basic", package = "aipmc-basic", version = "0.0.1" }
-transport = { path = "crates/transport", package = "aipmc-transport", version = "0.0.1" }
+basic = { path = "crates/basic", package = "aipmc-basic", version = "0.0.1", default-features = false }
+transport = { path = "crates/transport", package = "aipmc-transport", version = "0.0.1", default-features = false }
