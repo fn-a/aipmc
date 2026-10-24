@@ -1,6 +1,6 @@
 [package]
 name = "aipmc"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["fn-a <mr.fna.co@gmail.com>"]
 repository = "https://github.com/fn-a/aipmc"
@@ -11,8 +11,8 @@ keywords = ["aip", "acp", "embedded", "esp32", "stm32"]
 [dependencies]
 basic = { workspace = true }
 transport = { workspace = true }
-esp32 = { path = "crates/esp32", optional = true, package = "aipmc-esp32", version = "0.0.1" }
-stm32 = { path = "crates/stm32", optional = true, package = "aipmc-stm32", version = "0.0.1" }
+esp32 = { path = "crates/esp32", optional = true, package = "aipmc-esp32", version = "0.0.2" }
+stm32 = { path = "crates/stm32", optional = true, package = "aipmc-stm32", version = "0.0.2" }
 
 [features]
 default = ["std"]
@@ -53,5 +53,5 @@ serde_json = { version = "^1.0", default-features = false, features = ["alloc"] 
 heapless = { version = "^0.9", features = ["serde"] }
 embedded-io = "^0.7"
 defmt = "^1.1"
-basic = { path = "crates/basic", package = "aipmc-basic", version = "0.0.1", default-features = false }
-transport = { path = "crates/transport", package = "aipmc-transport", version = "0.0.1", default-features = false }
+basic = { path = "crates/basic", package = "aipmc-basic", version = "0.0.2", default-features = false }
+transport = { path = "crates/transport", package = "aipmc-transport", version = "0.0.2", default-features = false }

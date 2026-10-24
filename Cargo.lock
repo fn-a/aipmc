@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aipmc"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aipmc-basic",
  "aipmc-esp32",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "aipmc-basic"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "defmt",
  "heapless",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "aipmc-esp32"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aipmc-basic",
  "aipmc-transport",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "aipmc-stm32"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aipmc-basic",
  "aipmc-transport",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aipmc-transport"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aipmc-basic",
  "defmt",
